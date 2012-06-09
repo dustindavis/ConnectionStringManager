@@ -18,7 +18,7 @@ namespace ConnectionStringManager
             }
         }
 
-        public SavedConnectionPresenter(ISavedConnectionView view) 
+        public SavedConnectionPresenter(ISavedConnectionView view) : base(view)
         {
             View = view;
 

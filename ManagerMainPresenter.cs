@@ -31,18 +31,24 @@ namespace ConnectionStringManager
             _model = ManagerModel.Instance;
             Initialize();
 
-            _configFilePaths = new ConcurrentBag<string>();
-            _foundConnections = new ConcurrentBag<ConnectionStringEntry>();
             Task t = Task.Factory.StartNew(new Action(() =>
             {
-                ScanFilesystem(_solutionPath);
-                ConvertFilesToProjectItems();
-                _model.Entries = _foundConnections.ToList();
-                _view.ConnectionStrings = _foundConnections.ToList();
+                DiscoverConfigurations();
             }));
 
             ProfileHelper ph = new ProfileHelper();
             _view.SavedConnections = ph.SavedConnections;
+        }
+
+        private void DiscoverConfigurations()
+        {
+            _foundConnections = new ConcurrentBag<ConnectionStringEntry>();
+            _configFilePaths = new ConcurrentBag<string>();
+
+            ScanFilesystem(_solutionPath);
+            ConvertFilesToProjectItems();
+            _model.Entries = _foundConnections.ToList();
+            _view.ConnectionStrings = _foundConnections.ToList();
         }
 
         private void ScanFilesystem(string path)
@@ -139,7 +145,7 @@ namespace ConnectionStringManager
 
         private void _view_RefreshConnections(object sender, EventArgs e)
         {
-            ScanFilesystem(_solutionPath);
+            DiscoverConfigurations();
         }
 
         private void _view_OpenContainingConfig(ConnectionStringEntry entry, bool silent)
@@ -173,10 +179,7 @@ namespace ConnectionStringManager
         {
             try
             {
-                if (!entry.ProjectItem.IsOpen)
-                {
-                    entry.ProjectItem.Open(Constants.vsViewKindCode);
-                }
+                PrepareConfigFile(entry);
 
                 XDocument xdoc = XDocument.Load(entry.ConfigPath);
 
@@ -193,58 +196,81 @@ namespace ConnectionStringManager
 
                 _model.Entries.Add(entry);
             }
-            catch(Exception ex)
+            catch (UnauthorizedAccessException accessEx)
             {
-                _view.SetError(ex.Message);
+                _view.SetError("Unable to access the configuration file.\nReason: " + accessEx.Message);
             }
         }
 
         private void RemoveConnectionFromConfig(ConnectionStringEntry entry)
         {
-            if (!entry.ProjectItem.IsOpen)
+            try
             {
-                entry.ProjectItem.Open(Constants.vsViewKindCode);
+                PrepareConfigFile(entry);
+
+                XDocument xdoc = XDocument.Load(entry.ConfigPath);
+
+                var csNode = xdoc.Descendants(XName.Get("connectionStrings")).FirstOrDefault();
+                if (csNode == null) { return; }
+
+                foreach (XElement cs in csNode.Elements())
+                {
+                    if (!cs.Name.LocalName.Equals("add")) { continue; }
+                    if (!cs.Attribute(XName.Get("name")).Value.Equals(entry.ConnectionName)) { continue; }
+
+                    cs.Remove();
+                    xdoc.Save(entry.ConfigPath);
+                }
+
+                _model.Entries.Remove(entry);
             }
-
-            XDocument xdoc = XDocument.Load(entry.ConfigPath);
-
-            var csNode = xdoc.Descendants(XName.Get("connectionStrings")).FirstOrDefault();
-            if (csNode == null) { return; }
-
-            foreach (XElement cs in csNode.Elements())
+            catch (UnauthorizedAccessException accessEx)
             {
-                if (!cs.Name.LocalName.Equals("add")) { continue; }
-                if (!cs.Attribute(XName.Get("name")).Value.Equals(entry.ConnectionName)) { continue; }
-
-                cs.Remove();
-                xdoc.Save(entry.ConfigPath);
+                _view.SetError("Unable to access the configuration file.\nReason: " + accessEx.Message);
             }
-
-            _model.Entries.Remove(entry);
         }
 
         private void WriteConfigChanges( string connectionName, ConnectionStringEntry entry)
+        {
+            try
+            {
+                PrepareConfigFile(entry);
+
+                XDocument xdoc = XDocument.Load(entry.ConfigPath);
+
+                var csNode = xdoc.Descendants(XName.Get("connectionStrings")).FirstOrDefault();
+                if (csNode == null) { return; }
+
+                foreach (XElement cs in csNode.Elements())
+                {
+                    if (!cs.Name.LocalName.Equals("add")) { continue; }
+                    if (!cs.Attribute(XName.Get("name")).Value.Equals(connectionName)) { continue; }
+
+                    cs.Attribute(XName.Get("name")).Value = entry.ConnectionName;
+                    cs.Attribute(XName.Get("connectionString")).Value = entry.ConnectionString;
+                }
+
+                xdoc.Save(entry.ConfigPath);
+            }
+            catch (UnauthorizedAccessException accessEx)
+            {
+                _view.SetError("Unable to access the configuration file.\nReason: " + accessEx.Message);
+            }
+        }
+
+        private static void PrepareConfigFile(ConnectionStringEntry entry)
         {
             if (!entry.ProjectItem.IsOpen)
             {
                 entry.ProjectItem.Open(Constants.vsViewKindCode);
             }
 
-            XDocument xdoc = XDocument.Load(entry.ConfigPath);
-
-            var csNode = xdoc.Descendants(XName.Get("connectionStrings")).FirstOrDefault();
-            if (csNode == null) { return; }
-
-            foreach (XElement cs in csNode.Elements())
+            FileAttributes attributes = File.GetAttributes(entry.ConfigPath);
+            if ((attributes & FileAttributes.ReadOnly) == FileAttributes.ReadOnly)
             {
-                if (!cs.Name.LocalName.Equals("add")) { continue; }
-                if (!cs.Attribute(XName.Get("name")).Value.Equals(connectionName)) { continue; }
-
-                cs.Attribute(XName.Get("name")).Value = entry.ConnectionName;
-                cs.Attribute(XName.Get("connectionString")).Value = entry.ConnectionString;
+                attributes = attributes & ~FileAttributes.ReadOnly;
+                File.SetAttributes(entry.ConfigPath, attributes);
             }
-
-            xdoc.Save(entry.ConfigPath);
         }
 
         
